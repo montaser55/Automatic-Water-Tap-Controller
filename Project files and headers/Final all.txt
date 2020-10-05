@@ -1,0 +1,178 @@
+#define F_CPU 1000000
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/delay.h>
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+#include "I2C_Master_H_file.h"
+#define  Trigger_pin	PA0	/* Trigger pin */
+#define Device_Write_address	0xD0				/* Define RTC DS1307 slave address for write operation */
+#define Device_Read_address		0xD1				/* Make LSB bit high of slave address for read operation */
+#define TimeFormat12			0x40				/* Define 12 hour format */
+#define AMPM					0x20
+
+int TimerOverflow = 0;
+int state = 0;
+int degree = 0;
+int second,minute,hour,day,date,month,year;
+ISR(TIMER1_OVF_vect)
+{
+	TimerOverflow++;	/* Increment Timer Overflow count */
+}
+
+void RTC_Read_Clock(char read_clock_address)
+{
+	I2C_Start(Device_Write_address);				/* Start I2C communication with RTC */
+	I2C_Write(read_clock_address);					/* Write address to read */
+	I2C_Repeated_Start(Device_Read_address);		/* Repeated start with device read address */
+
+	second = I2C_Read_Ack();						/* Read second */
+	minute = I2C_Read_Ack();						/* Read minute */
+	hour = I2C_Read_Nack();							/* Read hour with Nack */
+	I2C_Stop();										/* Stop i2C communication */
+}
+void data_tx(unsigned char data)
+{
+	while(!(UCSRA&(1<<UDRE)));
+	UDR=data;
+}
+
+void data_tx_string(unsigned char str[])
+{
+	int i=0;
+	while(str[i]!='\0')
+	{
+		data_tx(str[i]);
+		i++;
+		_delay_ms(5);
+	}
+	
+}
+
+void RotateCW(int degree)
+{
+	degree = degree / 4;
+	int c1=0;
+	while(c1 < degree){
+		PORTB = 0x01;
+		_delay_us(1000);
+		PORTB = 0x00;
+		_delay_ms(19);
+		c1++;
+	}
+}
+
+
+void RotateCCW(int degree)
+{
+	degree = degree / 4;
+	int c2 = 0;
+	while(c2 < degree){
+		PORTB = 0x01;
+		_delay_us(1800);
+		PORTB = 0x00;
+
+		_delay_us(18200);
+		c2++;
+	}
+}
+
+int main(void)
+{
+	char string[10];
+	long count;
+	double distance;
+	char buffer[20];
+	
+	UCSRA=0b00000010;
+	UCSRB=0b00011000;
+	UCSRC=0b10000110;
+	UBRRL=12;
+	UBRRH=0x00;
+	
+	DDRA = 0x0F;
+	PORTA = PORTA | 0b00001110;
+	/* Make trigger pin as output */
+	PORTD = 0xFF;		/* Turn on Pull-up */
+	
+	DDRB = 0x01;         //Makes RC0 output pin
+	PORTB = 0x00;
+	_delay_ms(5000);
+		I2C_Init();
+	sei();			/* Enable global interrupt */
+	TIMSK = (1 << TOIE1);	/* Enable Timer1 overflow interrupts */
+	TCCR1A = 0;		/* Set all bit to zero Normal operation */
+	
+	while(1)
+	{
+		/* Give 10us trigger pulse on trig. pin to HC-SR04 */
+		PORTA |= (1 << Trigger_pin);
+		_delay_us(100);
+		PORTA &= (~(1 << Trigger_pin));
+		
+		TCNT1 = 0;	/* Clear Timer counter */
+		TCCR1B = 0x41;	/* Capture on rising edge, No prescaler*/
+		TIFR = 1<<ICF1;	/* Clear ICP flag (Input Capture flag) */
+		TIFR = 1<<TOV1;	/* Clear Timer Overflow flag */
+
+		/*Calculate width of Echo by Input Capture (ICP) */
+		
+		while ((TIFR & (1 << ICF1)) == 0);/* Wait for rising edge */
+		TCNT1 = 0;	/* Clear Timer counter */
+		TCCR1B = 0x01;	/* Capture on falling edge, No prescaler */
+		TIFR = 1<<ICF1;	/* Clear ICP flag (Input Capture flag) */
+		TIFR = 1<<TOV1;	/* Clear Timer Overflow flag */
+		TimerOverflow = 0;/* Clear Timer overflow count */
+
+		while ((TIFR & (1 << ICF1)) == 0);/* Wait for falling edge */
+		count = ICR1 + (65535 * TimerOverflow);	/* Take count */
+		/* 8MHz Timer freq, sound speed =343 m/s */
+		distance = (double)count / 58.3;
+		
+		if (state == 1)
+		{
+			_delay_ms(1000);
+		}
+		
+		
+		if( distance > 15)
+		{
+			if(state == 1)
+			{
+				RotateCCW(150);
+				_delay_ms(2000);
+				state = 0;
+				
+			}
+			else{
+				_delay_ms(200);
+			}
+			
+		}
+		else{
+			
+			if(state == 0)
+			{
+				RotateCW(150);
+				_delay_ms(2000);
+				state = 1;	
+				RTC_Read_Clock(0);
+				sprintf(buffer, "%02x:%02x:%02xM", (hour & 0b00011111), minute, second);
+						
+				data_tx_string(buffer);
+				_delay_ms(1000);
+						
+			}
+			else{
+				_delay_ms(200);
+			}
+			
+			 
+		}
+
+		
+	}
+}
+
+
